@@ -40,6 +40,14 @@ const POWERUP_MAX_FRACTION = 0.7; // el drop ocurre antes de este % de destrucci
 const POWERUP_TTL = 8; // segundos visible antes de desaparecer
 const FAN_ANGLE = 0.26; // ~15° entre balas del abanico
 
+// ── Power-up: escudo ──────────────────────────────────────────────────────────
+const SHIELD_DURATION = 5; // segundos de efecto
+const SHIELD_RADIUS = 22; // radio del círculo de energía
+const SHIELD_SPAWN_MIN = 15; // intervalo mínimo entre apariciones (s)
+const SHIELD_SPAWN_MAX = 25; // intervalo máximo entre apariciones (s)
+const SHIELD_GRACE = 1; // invencibilidad breve tras absorber un golpe
+const SHIELD_SAFE_DIST = 150; // distancia mínima a la nave al aparecer
+
 // ── Bullet ────────────────────────────────────────────────────────────────────
 class Bullet {
   constructor(x, y, angle) {
@@ -201,8 +209,24 @@ class Ship {
     return [new Bullet(ox, oy, this.angle)];
   }
 
+  drawShield() {
+    if (shieldTimer <= 0) return;
+    // Parpadeo rápido en el último segundo y medio
+    if (shieldTimer < 1.5 && Math.floor(shieldTimer * 8) % 2 === 0) return;
+    const pulse = 0.55 + 0.25 * Math.sin(performance.now() / 120);
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.strokeStyle = `rgba(102, 255, 102, ${pulse.toFixed(2)})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, SHIELD_RADIUS, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   draw() {
     if (this.dead) return;
+    this.drawShield();
     // Parpadeo durante invencibilidad de reaparición
     if (this.invincible > 0 && Math.floor(this.invincible * 8) % 2 === 0) return;
 
@@ -269,10 +293,16 @@ class Particle {
 }
 
 // ── PowerUp (ítem recolectable) ───────────────────────────────────────────────
+const POWERUP_STYLES = {
+  triple: { color: "#0ff", label: "3" },
+  shield: { color: "#6f6", label: "S" },
+};
+
 class PowerUp {
-  constructor(x, y) {
+  constructor(x, y, kind = "triple") {
     this.x = x;
     this.y = y;
+    this.kind = kind;
     const angle = rand(0, Math.PI * 2);
     this.vx = Math.cos(angle) * 20;
     this.vy = Math.sin(angle) * 20;
@@ -291,21 +321,23 @@ class PowerUp {
   draw() {
     // Parpadeo en los últimos 2 segundos
     if (this.ttl < 2 && Math.floor(this.ttl * 6) % 2 === 0) return;
-    ctx.strokeStyle = "#0ff";
-    ctx.fillStyle = "#0ff";
+    const { color, label } = POWERUP_STYLES[this.kind];
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
     ctx.stroke();
     ctx.font = "bold 13px monospace";
     ctx.textAlign = "center";
-    ctx.fillText("3", this.x, this.y + 4.5);
+    ctx.fillText(label, this.x, this.y + 4.5);
   }
 }
 
 // ── Estado del juego ──────────────────────────────────────────────────────────
 let ship, bullets, asteroids, particles;
 let powerUp, powerUpKillTarget, levelKills, tripleShotTimer;
+let shieldPickup, shieldSpawnTimer, shieldTimer;
 let score, lives, level;
 let state; // 'playing' | 'dead' | 'gameover'
 let deadTimer;
@@ -330,12 +362,50 @@ function setupLevelPowerUp(count) {
   powerUpKillTarget = randInt(1, Math.floor(count * 7 * POWERUP_MAX_FRACTION));
 }
 
+// Reinicia la cuenta atrás hasta la próxima aparición del escudo (≥ 15 s).
+function resetShieldSpawn() {
+  shieldSpawnTimer = rand(SHIELD_SPAWN_MIN, SHIELD_SPAWN_MAX);
+}
+
+function spawnShieldPickup() {
+  let x, y;
+  do {
+    x = rand(0, W);
+    y = rand(0, H);
+  } while (Math.hypot(x - ship.x, y - ship.y) < SHIELD_SAFE_DIST);
+  shieldPickup = new PowerUp(x, y, "shield");
+}
+
+// Mueve el ítem de escudo; si expira, arranca la espera de la siguiente aparición.
+function updateShieldPickup(dt) {
+  if (!shieldPickup) return;
+  shieldPickup.update(dt);
+  if (shieldPickup.dead) {
+    shieldPickup = null;
+    resetShieldSpawn();
+  }
+}
+
+// Destruye un asteroide: puntos, partículas, drop de triple shot y fragmentos (en `out`).
+function destroyAsteroid(a, out) {
+  a.dead = true;
+  score += POINTS[a.size];
+  explode(a.x, a.y, a.size * 5);
+  // El power-up aparece una vez por nivel, en una destrucción al azar
+  levelKills++;
+  if (levelKills === powerUpKillTarget) powerUp = new PowerUp(a.x, a.y);
+  out.push(...a.split());
+}
+
 function initGame() {
   ship = new Ship();
   bullets = [];
   asteroids = [];
   particles = [];
   tripleShotTimer = 0;
+  shieldTimer = 0;
+  shieldPickup = null;
+  resetShieldSpawn();
   score = 0;
   lives = 3;
   level = 1;
@@ -361,6 +431,7 @@ function killShip() {
   explode(ship.x, ship.y, 14);
   ship.dead = true;
   tripleShotTimer = 0;
+  shieldTimer = 0;
   lives--;
   if (lives <= 0) {
     state = "gameover";
@@ -388,6 +459,7 @@ function update(dt) {
       powerUp.update(dt);
       if (powerUp.dead) powerUp = null;
     }
+    updateShieldPickup(dt);
     if (deadTimer <= 0) {
       state = "playing";
       ship.reset();
@@ -405,9 +477,18 @@ function update(dt) {
   asteroids.forEach((a) => a.update(dt));
   particles.forEach((p) => p.update(dt));
   tripleShotTimer = Math.max(0, tripleShotTimer - dt);
+  shieldTimer = Math.max(0, shieldTimer - dt);
   if (powerUp) {
     powerUp.update(dt);
     if (powerUp.dead) powerUp = null;
+  }
+
+  // Escudo: un ítem a la vez, con espera mínima entre apariciones
+  if (shieldPickup) {
+    updateShieldPickup(dt);
+  } else {
+    shieldSpawnTimer -= dt;
+    if (shieldSpawnTimer <= 0) spawnShieldPickup();
   }
 
   bullets = bullets.filter((b) => !b.dead);
@@ -420,19 +501,21 @@ function update(dt) {
     powerUp = null;
   }
 
+  // Nave vs ítem de escudo
+  if (shieldPickup && dist(ship, shieldPickup) < ship.radius + shieldPickup.radius) {
+    shieldTimer = SHIELD_DURATION;
+    explode(shieldPickup.x, shieldPickup.y, 6);
+    shieldPickup = null;
+    resetShieldSpawn();
+  }
+
   // Bala vs asteroide
   const newAsteroids = [];
   for (const b of bullets) {
     for (const a of asteroids) {
       if (!a.dead && !b.dead && dist(b, a) < a.radius) {
         b.dead = true;
-        a.dead = true;
-        score += POINTS[a.size];
-        explode(a.x, a.y, a.size * 5);
-        // El power-up aparece una vez por nivel, en una destrucción al azar
-        levelKills++;
-        if (levelKills === powerUpKillTarget) powerUp = new PowerUp(a.x, a.y);
-        newAsteroids.push(...a.split());
+        destroyAsteroid(a, newAsteroids);
       }
     }
   }
@@ -441,9 +524,19 @@ function update(dt) {
 
   // Nave vs asteroide
   if (ship.invincible <= 0) {
+    const hitRadius = shieldTimer > 0 ? SHIELD_RADIUS : ship.radius;
     for (const a of asteroids) {
-      if (dist(ship, a) < ship.radius + a.radius * 0.82) {
-        killShip();
+      if (dist(ship, a) < hitRadius + a.radius * 0.82) {
+        if (shieldTimer > 0) {
+          // El escudo absorbe el golpe y destruye el asteroide
+          shieldTimer = 0;
+          const fragments = [];
+          destroyAsteroid(a, fragments);
+          asteroids = asteroids.filter((x) => !x.dead).concat(fragments);
+          ship.invincible = SHIELD_GRACE;
+        } else {
+          killShip();
+        }
         break;
       }
     }
@@ -478,11 +571,17 @@ function drawHUD() {
   ctx.textAlign = "left";
   ctx.fillText(`SCORE  ${score}`, 14, 26);
 
+  let hudY = 46;
   if (tripleShotTimer > 0) {
     ctx.fillStyle = "#0ff";
-    ctx.fillText(`TRIPLE  ${Math.ceil(tripleShotTimer)}s`, 14, 46);
-    ctx.fillStyle = "#fff";
+    ctx.fillText(`TRIPLE  ${Math.ceil(tripleShotTimer)}s`, 14, hudY);
+    hudY += 20;
   }
+  if (shieldTimer > 0) {
+    ctx.fillStyle = "#6f6";
+    ctx.fillText(`ESCUDO  ${Math.ceil(shieldTimer)}s`, 14, hudY);
+  }
+  ctx.fillStyle = "#fff";
 
   ctx.textAlign = "center";
   ctx.fillText(`NIVEL ${level}`, W / 2, 26);
@@ -508,6 +607,7 @@ function draw() {
   asteroids.forEach((a) => a.draw());
   bullets.forEach((b) => b.draw());
   if (powerUp) powerUp.draw();
+  if (shieldPickup) shieldPickup.draw();
   ship.draw();
 
   drawHUD();

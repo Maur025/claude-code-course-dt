@@ -25,4 +25,4 @@ All game logic lives in `game.js` (single script, `'use strict'`, globals — no
 - **Input**: `keys` (held) and `justPressed` (edge-triggered, consumed by `pressed(code)`). Use `pressed()` for one-shot actions like firing; read `keys[...]` for continuous ones.
 - **Asteroid sizes** are 1–3, indexed into `RADII`, `SPEEDS`, `POINTS` arrays (index 0 unused). `split()` spawns two of `size - 1`. Levels spawn `3 + level` size-3 asteroids away from screen center (`SAFE_DIST`); `nextLevel()` resets the ship and clears bullets.
 
-Note: the README mentions power-ups and "estrella fugaz" asteroids, but these are not implemented in `game.js`.
+Power-ups: triple shot (drops once per level on a random kill) and shield (`shieldPickup`, spawns randomly every 15–25s, one at a time; absorbs one asteroid hit, lasts 5s). Both use `PowerUp` with a `kind`. The README's "estrella fugaz" asteroids are not implemented.
